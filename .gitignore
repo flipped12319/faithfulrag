@@ -1,0 +1,9 @@
+util/
+
+chunk_dataset/
+
+__pycache__/
+
+chunk_index.faiss
+
+chunk_metadata.pkl
