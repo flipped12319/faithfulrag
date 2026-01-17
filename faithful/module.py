@@ -3,12 +3,11 @@ from typing import List
 from prompt import PromptGenerator
 
 import re
-from qwenBatch import test
 import torch
-from util.format_util import FormatConverter
+from format_util import FormatConverter
+from qwen_instruct import LLMWithThinking
 
-model_name="Qwen/Qwen3-8B"
-# model=LLMWithThinking("Qwen/Qwen3-8B")
+
 class FactMiningModule:
     def __init__(self,model,tokenizer):
         self.prompt_generator = PromptGenerator(
@@ -22,23 +21,20 @@ class FactMiningModule:
         self.model=model
         self.tokenizer=tokenizer
 
-    async def generate_knowledge(
-            self,
-            dataset,
-    ):
-
+    def generate_knowledge(self, dataset):
+        llm = LLMWithThinking(self.model, self.tokenizer)
         prompts = [
             self.prompt_generator_extract.generate_factual_knowledge(
                 user_query=item['question']
             )
             for item in dataset
         ]
-        # Generate responses using LLM backend
-        # merged_params = {**self.default_sampling_params, **sampling_kwargs}
         system_prompt="You are a helpful,respectful and honest assistant. Always answer as helpfully as possible"
-        raw_results =await test(system_prompt,prompts,self.model,self.tokenizer)
-        # print("raw_results",raw_results)
-        # Parse and return facts
+        raw_results = llm.generate_all(
+            system_prompt=system_prompt,
+            prompt_list=prompts,
+            batch_size=3
+        )
         return [
             {
                 'id': item['id'],
@@ -47,7 +43,7 @@ class FactMiningModule:
             for item, result in zip(dataset, raw_results)
         ]
 
-    async def generate_self_context(
+    def generate_self_context(
             self,
             dataset,
             # knowledges: Optional[Union[Dict, List[Dict]]] = None,
@@ -66,6 +62,7 @@ class FactMiningModule:
             List of dictionaries containing context for each item
         """
         # Generate prompts for context generation
+        llm = LLMWithThinking(self.model, self.tokenizer)
         prompts = []
         for item in dataset:
             if knowledges is None:
@@ -80,10 +77,12 @@ class FactMiningModule:
                 )
                 if knowledge is None:
                     # logger.warning(f"No knowledge found for item {item['id']}")
+                    print("no knowledge found")
                     prompt = self.prompt_generator.generate_context_directly_prompt(
                         user_query=item['question']
                     )
                 else:
+                    print("found knowledge")
                     prompt = self.prompt_generator.generate_context_by_factual_knowledge(
                         user_query=item['question'],
                         factual_knowledge=knowledge['facts']
@@ -94,14 +93,18 @@ class FactMiningModule:
         # merged_params = {**self.default_sampling_params, **sampling_kwargs}
         # logger.info(f"Generating self-contexts...")
         system_prompt = "You are a helpful,respectful and honest assistant. Always answer as helpfully as possible"
-        raw_results = await test(system_prompt,prompts,self.model,self.tokenizer)
+        raw_results = llm.generate_all(
+            system_prompt=system_prompt,
+            prompt_list=prompts,
+            batch_size=3
+        )
         # Return contexts
         return [
             {'id': item['id'], 'context': result}
             for item, result in zip(dataset, raw_results)
         ]
 
-    async def extract_facts(
+    def extract_facts(
             self,
             contexts,
     ):
@@ -120,6 +123,7 @@ class FactMiningModule:
             contexts = [contexts]
 
         # Generate prompts for fact extraction
+        llm = LLMWithThinking(self.model, self.tokenizer)
         prompts = [
             self.prompt_generator_extract.generate_context_extract(
                 user_context=ctx['context']
@@ -128,13 +132,11 @@ class FactMiningModule:
         ]
         system_prompt="You are a precise and reliable information extractor.Your sole task is to extract relevant information from the given context strictly according to the instructions.You must not add, modify,or infer any information that is not explicitly stated in the context"
         # Generate responses using LLM backend
-        raw_results = await test(
+        raw_results = llm.generate_all(
             system_prompt=system_prompt,
-            prompts=prompts,
-            model=self.model,
-            tokenizer=self.tokenizer
+            prompt_list=prompts,
+            batch_size=3
         )
-
         # Parse and return facts
         return [
             {
@@ -150,8 +152,10 @@ class ContextualAlignmentModule:
         self.embedding_model = model
         self.tokenizer=tokenizer
 
-    # def chunk_text(self,paragraph: str, chunk_size: int = 20) -> List[str]:
+
+    # def chunk_text(self,paragraph: str, chunk_size: int = 20):
     #     sentences = self.tokenizer.tokenize(paragraph)
+    #     chunk_num=0
     #     chunks = []
     #     current_chunk = []
     #     current_length = 0
@@ -160,6 +164,7 @@ class ContextualAlignmentModule:
     #         sentence_length = len(sentence.split())
     #         if current_length + sentence_length > chunk_size:
     #             chunks.append(' '.join(current_chunk))
+    #             chunk_num=chunk_num+1
     #             current_chunk = []
     #             current_length = 0
     #         current_chunk.append(sentence)
@@ -167,59 +172,40 @@ class ContextualAlignmentModule:
     #
     #     if current_chunk:
     #         chunks.append(' '.join(current_chunk))
+    #         chunk_num = chunk_num + 1
     #
-    #     return chunks
+    #     chunk_inf=[]
+    #     chunk_inf.append(chunk_num)
+    #     chunk_inf.append(chunks)
+    #
+    #     return chunk_inf
 
-    def chunk_text(self,paragraph: str, chunk_size: int = 20):
-        sentences = self.tokenizer.tokenize(paragraph)
-        chunk_num=0
+    def chunk_text(self,text, chunk_size=300):
+        sentences = re.split(r'(?<=[.!?])\s+', text)
         chunks = []
-        current_chunk = []
-        current_length = 0
+        chunk_inf = []
+        chunk_num=0
+        current = ""
 
-        for sentence in sentences:
-            sentence_length = len(sentence.split())
-            if current_length + sentence_length > chunk_size:
-                chunks.append(' '.join(current_chunk))
-                chunk_num=chunk_num+1
-                current_chunk = []
-                current_length = 0
-            current_chunk.append(sentence)
-            current_length += sentence_length
+        for sent in sentences:
+            if len(current) + len(sent) <= chunk_size:
+                current += (" " if current else "") + sent
+            else:
+                chunks.append(current)
+                current = sent
+                chunk_num = chunk_num + 1
 
-        if current_chunk:
-            chunks.append(' '.join(current_chunk))
-            chunk_num = chunk_num + 1
+        if current:
+            chunks.append(current)
+            chunk_num=chunk_num+1
 
-        chunk_inf=[]
+
         chunk_inf.append(chunk_num)
         chunk_inf.append(chunks)
 
         return chunk_inf
 
 
-    # def calculate_similarity(
-    #         self,
-    #         paragraph: str,
-    #         str_list: List[str],
-    #         top_k: int = 5,
-    #         chunk_size: int = 50,
-    #
-    # ):
-    #     chunks = self.chunk_text(paragraph, chunk_size=chunk_size)
-    #
-    #     chunk_embeddings = self.embedding_model.encode(chunks, convert_to_tensor=True, show_progress_bar=False)
-    #     str_list_embeddings = self.embedding_model.encode(str_list, convert_to_tensor=True, show_progress_bar=False)
-    #
-    #     results = []
-    #
-    #     for i, string in enumerate(str_list):
-    #         similarity = self.embedding_model.similarity(str_list_embeddings[i], chunk_embeddings)
-    #         top_values, top_indices = torch.topk(similarity, k=top_k)
-    #         top_chunks = [(chunks[idx], score) for idx, score in zip(top_indices[0].tolist(),top_values[0].tolist())]
-    #         results.append((string, top_chunks))
-    #
-    #     return results
     def calculate_similarity(
             self,
             paragraph: str,
@@ -228,7 +214,8 @@ class ContextualAlignmentModule:
             chunk_size: int = 50,
 
     ):
-        chunks_inf = self.chunk_text(paragraph, chunk_size=chunk_size)
+        # chunks_inf = self.chunk_text(paragraph, chunk_size=chunk_size)
+        chunks_inf = self.chunk_text(paragraph)
         chunks=chunks_inf[1]
         chunk_num=chunks_inf[0]
 
@@ -254,14 +241,16 @@ class ContextualAlignmentModule:
             if len(fact['facts']) == 0:
                 print('No facts found')
                 continue
-            paragraph = FormatConverter.remove_brackets_and_content(item['context'])
+            # paragraph = FormatConverter.remove_brackets_and_content(item['context'])
+            paragraph =item['context']
             results = self.calculate_similarity(paragraph, fact['facts'], top_k=sent_topk, chunk_size=chunk_size)
             chunks = []
             for _,match in results:
                 for chunk,score in match:
-                    chunk_text = chunk.replace("Ġ", " ")
-                    chunk_text = " ".join(chunk_text.split())
-                    chunks.append({'chunk':chunk_text,'score':score})
+                    # chunk_text = chunk.replace("Ġ", " ")
+                    # chunk_text = " ".join(chunk_text.split())
+                    # chunks.append({'chunk':chunk_text,'score':score})
+                    chunks.append({'chunk': chunk, 'score': score})
 
             all_chunks.append({'id':fact['id'],'chunks':chunks})
         return all_chunks
@@ -302,6 +291,7 @@ class SelfThinkModule:
                 self,
                 dataset,
         ):
+            llm=LLMWithThinking(self.model,self.tokenizer)
             prompts = []
             for item in dataset:
                 prompts.append(
@@ -313,21 +303,27 @@ class SelfThinkModule:
                 )
             system_prompt_cot="You are an expert in retrieval QA and Chain of Thought reasoning.Provide your reasoning steps followed by a precise and direct answer.Avoiding any unnecessary explanations or verbosity"
             system_prompt_wo_cot="You are an expert in retrieval QA.Please respond with the exact answer only.Don't be verbose or provide extra information"
-            raw_results = await test(
-                system_prompt=system_prompt_wo_cot,
-                prompts=prompts,
-                model=self.model,
-                tokenizer=self.tokenizer
+            # raw_results = await test(
+            #     system_prompt=system_prompt_wo_cot,
+            #     prompts=prompts,
+            #     model=self.model,
+            #     tokenizer=self.tokenizer
+            # )
+            raw_results = llm.generate_all(
+                system_prompt=system_prompt_cot,
+                prompt_list=prompts,
+                batch_size=3
             )
 
             # Return predictions
             return {item['id']: res for item, res in zip(dataset, raw_results)}
 
-        async def predict_answer_normal_cot(
+        def predict_answer_normal_cot(
                 self,
                 dataset,
                 facts,
         ):
+            llm=LLMWithThinking(self.model,self.tokenizer)
             prompts = []
             for item in dataset:
                 # Find matching facts for this item
@@ -347,14 +343,49 @@ class SelfThinkModule:
                 )
             system_prompt_cot="You are an expert in retrieval QA and Chain of Thought reasoning.Provide your reasoning steps followed by a precise and direct answer.Avoiding any unnecessary explanations or verbosity"
             system_prompt_wo_cot="You are an expert in retrieval QA.Please respond with the exact answer only.Don't be verbose or provide extra information"
-            # print('prompts; ',prompts)
-            raw_results = await test(
-                system_prompt=system_prompt_wo_cot,
-                prompts=prompts,
-                model=self.model,
-                tokenizer=self.tokenizer
-            )
 
+            raw_results = llm.generate_all(
+                system_prompt=system_prompt_wo_cot,
+                prompt_list=prompts,
+                batch_size=3
+            )
+            # Return predictions
+            return {item['id']: res for item, res in zip(dataset, raw_results)}
+
+        def predict_answer_normal_cot_with_conflict(
+                self,
+                dataset,
+                facts,
+                conflict_arr
+        ):
+            llm = LLMWithThinking(self.model, self.tokenizer)
+            prompts = []
+            for index,item in enumerate(dataset):
+                # Find matching facts for this item
+                fact_str = next(
+                    (' '.join([chunk['chunk'] for chunk in d['topk_chunks']])
+                     for d in facts if d['id'] == item['id']),
+                    None
+                )
+
+                prompts.append(
+                    self.prompt_generator_qa_cot.generate_qa_prompt_normal_cot_with_conflict(
+                        context=item.get('context', ''),
+                        question=item['question'],
+                        options=item.get('choices'),
+                        facts=fact_str,
+                        conflict_information=conflict_arr[index]
+
+                    )
+                )
+            system_prompt_cot = "You are an expert in retrieval QA and Chain of Thought reasoning.Provide your reasoning steps followed by a precise and direct answer.Avoiding any unnecessary explanations or verbosity"
+            system_prompt_wo_cot = "You are an expert in retrieval QA.Please respond with the exact answer only.Don't be verbose or provide extra information"
+
+            raw_results = llm.generate_all(
+                system_prompt=system_prompt_wo_cot,
+                prompt_list=prompts,
+                batch_size=3
+            )
             # Return predictions
             return {item['id']: res for item, res in zip(dataset, raw_results)}
 

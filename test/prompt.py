@@ -21,6 +21,43 @@ class PromptGenerator:
     def _generate_prompt(self, user_prompt):
         return user_prompt
 
+    def clean_text_prompt(self,context):
+        prompt="""
+         You are a strict text-normalization assistant.
+        
+        Your ONLY task:
+        - Fix incorrect spaces that appear *inside a single word*.
+        - Keep all valid spaces between separate words.
+        - Do NOT add or remove punctuation.
+        - Do NOT rewrite, rephrase, or format the text.
+        - Do NOT add explanations, comments, or code blocks.
+        - Do NOT add or remove line breaks.
+        - If you are not certain that removing the space will form a valid English word, do nothing.
+        
+        Hard rule (very important):
+        - If the input contains two words without a space (e.g., "rigoroustesting"), **you must NOT insert a space**.
+        - If the input contains two words WITH a space (e.g., "rigorous testing"), **you must NOT remove that space**.
+        
+        Examples of valid fixes:
+        "m eteor ite" → "meteorite"
+        "Observ ing" → "Observing"
+        "post -m eteor ite" → "post-meteorite"
+        "rotat ion" → "rotation"
+        
+        Examples of things NOT allowed:
+        - Do NOT join two separate words ("planet surface" must not become "planetsurface").
+        - Do NOT remove or add normal word boundaries.
+        - Do NOT add ``` or other markdown formatting.
+        
+        Now return ONLY the cleaned text, with no explanation.
+        
+        Input:
+        {text}
+        
+        Output:
+        """
+        return self._generate_prompt(prompt.format(text=context))
+
     def generate_factual_knowledge(self, user_query):
         prompt = """
         Task Description:

@@ -21,6 +21,32 @@ class PromptGenerator:
     def _generate_prompt(self, user_prompt):
         return user_prompt
 
+    def clean_text_prompt(self,context):
+        prompt="""
+        You are a text-cleaning assistant. 
+        Your task is to fix **incorrect internal spaces inside words**, while keeping all correct word boundaries unchanged.
+        
+        ### Rules
+        - Only remove spaces *inside a word that should be continuous*.
+        - Do NOT change valid spaces between words.
+        - Do NOT rewrite, paraphrase, or change punctuation.
+        - Do NOT add or remove any words.
+        - ONLY fix spacing errors caused by text artifacts such as:
+          - "m eteor ite" → "meteorite"
+          - "Observ ing" → "Observing"
+          - "celestial m echanics" → "celestial mechanics" (fix only the wrong one)
+          - "post -m eteor ite" → "post-meteorite"
+        - Keep everything else exactly the same.
+        -Only remove an internal space if the merged word is a common valid English word.If unsure, do nothing.
+
+        
+        ### Input text:
+        {text}
+        
+        ### Output (cleaned text):
+        """
+        return self._generate_prompt(prompt.format(text=context))
+
     def generate_factual_knowledge(self, user_query):
         prompt = """
         Task Description:
@@ -247,8 +273,8 @@ class PromptGenerator:
         You are a reasoning assistant that must output strictly valid JSON.
         
         ##Task Description: 
-        Given facts,a question and a context, your task is to select the most accurate and relevant answer from the provided options. You should only choose the option that directly answers the question based on the facts and context.
-
+        Given facts,a question and a context, your task is to select the most accurate and relevant answer. You should only choose the answer that directly answers the question based on the facts and context.
+        
         Follow the steps:
         1. Analyze the **Question** carefully.
         2. Use the **Facts** to provide a clear and accurate answer to the question.
@@ -602,7 +628,7 @@ class PromptGenerator:
     def generate_qa_prompt(self, context, question, options=None, facts=None):
         normal_w_facts_prompt = """
         Task Description: 
-        Given facts,a question and a context, your task is to select the most accurate and relevant answer from the provided options. You should only choose the option that directly answers the question based on the facts and context.
+        Given facts,a question and a context, your task is to select the most accurate and relevant answer from the provided options. You should only choose the answer that directly answers the question based on the facts and context.
 
         Follow the steps:
         1. Analyze the **Question** carefully.
@@ -734,3 +760,271 @@ class PromptGenerator:
                 return choices_wo_facts_prompt.format(question=question, context=context, options=options)
             else:
                 return choices_w_facts_prompt.format(question=question, context=context, options=options, facts=facts)
+
+    def extract_tripple(self,context):
+        prompt = """
+                You are an expert information extraction system that extracts precise subject–relation–object triples.
+                Your output must be structurally correct, complete, and fully grounded in the input text.
+
+                ### Extraction Rules
+
+                1. Extract only factual, explicit information stated in the text.
+                2. A triple = {{head, relation, tail}}.
+                3. DO NOT generate NULL or empty values.
+                4. DO NOT guess or hallucinate missing information.
+                5. The **relation must be a complete phrase**, including required prepositions.
+                   - Example: “takes place in”, “is part of”, “is located in”, “results in”.
+
+                6. The **tail should NOT contain prepositions** (in, on, at, to, from…).
+                   - These should be moved into the relation.
+                    For Example:
+                    Correct:
+                      relation = "takes place in"
+                      tail = "the leaves of plants"
+
+                    Incorrect:
+                      relation = "takes place in the leaves of"
+                      tail = "plants"
+
+                7. Normalize entity phrases:
+                   - Remove determiners (“the”, “a”, “an”) unless needed.
+                   - Use base form for concept entities.
+                8. Keep wording concise but accurate.
+                9. Relation MUST be a concise verb phrase (1–3 words), such as "is a", "causes", "occurs in", "located at".
+                   Do NOT include long clauses in relation.
+                10. Each triple must contain exactly one atomic action or relation.
+                    If the sentence contains multiple verbs/actions, you MUST extract multiple triples.
+                    Never merge multiple actions into a single relation. This is strictly forbidden.
+                    Incorrect Example (DO NOT DO THIS):
+                        {{
+                        "head": "The analyst",
+                        "relation": "used analytical software to examine the dataset",
+                        "tail": "to discover useful patterns in the recorded results"
+                        }}
+                    Correct Example (DO THIS):
+                        [
+                          {{
+                            "head": "analyst",
+                            "relation": "used",
+                            "tail": "analytical software"
+                          }},
+                          {{
+                            "head": "analytical software",
+                            "relation": "to examine",
+                            "tail": "dataset"
+                          }},
+                          {{
+                            "head": "analyst",
+                            "relation": "discovered",
+                            "tail": "useful patterns"
+                          }},
+                          {{
+                            "head": "dataset",
+                            "relation": "recorded",
+                            "tail": "results"
+                          }}
+                        ]
+                11.- If the sentence is in *passive voice*, the **true semantic agent** (the entity performing the action) MUST be extracted as the **head**, even if it appears after "by".
+                      Example:
+                        Text: "The samples were analyzed by the researcher."
+                        Correct triple:
+                          head = "researcher"
+                          relation = "analyzed"
+                          tail = "samples"
+
+                    - The grammatical subject of a passive sentence (e.g., “patterns”, “samples”) MUST NOT be used as the head unless it is truly the agent.
+                    - Rewrite passive constructions into their active logical form **internally** before extracting triples.
+                      Example:
+                        "Meaningful patterns were identified by the software."
+                        Treat as → "The software identified meaningful patterns."
+                12. Output an array of triples. Each triple MUST follow this format:
+                [
+                    {{
+                    "head": "<entity>",
+                    "relation": "<relation>",
+                    "tail": "<entity>"
+                    }}
+                ]
+                ### Additional Constraints
+                - Do not rewrite, paraphrase, or invent content.
+                - Preserve all meaning present in the original sentence.
+                - If multiple triples exist, output all of them.
+                - If a phrase conveys location, cause, purpose, or property, extract it as a triple.
+                - Tail must be a complete noun phrase.
+                - If the sentence is incomplete, extract all factual triples that can still be reliably inferred from the completed portion of the text.
+                  Do not discard triples just because the sentence is unfinished.
+
+
+                ### Now extract triples from the following text:
+                {text}
+        """
+        return self._generate_prompt(prompt.format(text=context))
+
+    def generate_conflict_prompt(self,conflictType,context):
+        prompt="""
+        **IMPORTANT**:
+        The output will be parsed by a strict JSON parser.
+        If the output contains ```json, ``` or any markdown fences,the output will be considered INVALID and discarded.
+
+        
+        You are a **JSON output generator** for conflict detection in RAG systems.. 
+
+        Your task:
+        Given a context and a conflict type, generate ONE conflicted version that contradicts the original.
+
+        
+        =====================================================================
+        STRICT GLOBAL RULES
+        =====================================================================
+        1. You MUST NOT modify more than **3 locations**.
+        2. A “location” means one number/date/value inside ONE sentence.
+        3. Before generating the conflicted text, you MUST output a list called "modifications" that specifies:
+            - (a) sentence index to modify
+            - (b) exact original value
+            - (c) new contradictory value
+        4. ONLY the listed locations may be changed.
+        5. Every other part of the text MUST be copied **verbatim** (identical characters).
+        6. No rewriting, no paraphrasing, no hidden changes.
+        7. Return a raw JSON object ONLY.
+        Do NOT include ```json, ```, markdown, comments, or explanations.
+        Any output containing ``` will be treated as a failure.
+        
+        =====================================================================
+        ATTRIBUTE-TYPE SPECIAL RULES  
+        =====================================================================
+        If conflict_type = "attribute", you MUST:
+        
+        A. Identify at least 2–5 candidate “attribute properties” from the context  
+           (e.g., nationality, occupation, birthplace, species, color, size, language, organization, role).  
+           You MUST list these before deciding which to modify.
+        
+        B. Choose ONLY from those attribute properties.  
+           *You MUST NOT modify any temporal, numeric, or date-related information.*  
+           Forbidden modifications (MUST NOT appear):
+           - years (1990, 2010, etc.)
+           - dates (“in 1995”, “on July 3”)
+           - ages (“at 20”, “age 32”)
+           - any timeline-related words (“later”, “after”, “before”, “since”)
+        
+        C. Attribute conflict MUST NOT be implemented by modifying years or time.
+        
+        D. If a candidate attribute cannot be found, you MUST NOT fallback to temporal conflict.  
+           Instead, you must return an error message:
+           “ERROR: no attribute fields detectable in context.”
+        
+        =====================================================================
+        CONFLICT RULES BY TYPE
+        =====================================================================
+        - Numerical conflict: only modify numeric quantities not expressing time.
+        - Temporal conflict: only modify explicit time expressions.
+        - Attribute conflict: only modify inherent non-temporal properties.
+        
+        =====================================================================
+        OUTPUT FORMAT 
+
+        =====================================================================
+        {{
+          "original": "...",
+          "conflict_type": "...",
+        
+          "attribute_candidates": [...],   // Only for attribute type
+        
+          "modifications": [
+              {{"sentence_id": X, "from": "A", "to": "B"}},
+              ...
+          ],
+        
+          "conflicts": {{
+              "text": "..."
+          }}
+        }}
+        
+        VALID OUTPUT EXAMPLE:
+        {{...}}
+        
+        INVALID OUTPUT EXAMPLE:
+        ```json
+        {{...}}
+        
+        type:
+        {type}
+        
+        context:
+        {your_input_fact}
+        """
+        return self._generate_prompt(prompt.format(type=conflictType,your_input_fact=context))
+
+    def information_extraction(self,chunk):
+        prompt = """
+        You are an information extraction system.
+
+        Extract all atomic, verifiable factual claims from the following text.
+        Each claim should be a single, standalone fact that can be independently verified.
+
+        Rules:
+        - Do NOT infer or add new information.
+        - Do NOT merge multiple facts into one claim.
+        - Use simple declarative sentences.
+        - Focus on entities, dates, locations, roles, and attributes.
+
+        Text:
+        {chunk}
+
+        Output (JSON array only):
+        [
+          "claim 1",
+          "claim 2",
+          ...
+        ]
+        """
+
+        return self._generate_prompt(prompt.format(chunk=chunk))
+
+    def conflict_detection_layer1(self,chunk):
+        prompt = """
+        You are a lightweight factual consistency screener.
+
+        Given a retrieved text chunk, decide whether it potentially conflicts
+        with well-established, commonly accepted world knowledge.
+
+        Important:
+        - Do NOT verify details exhaustively.
+        - Do NOT explain or correct the text.
+        - If the chunk contains any claim that seems historically, geographically,
+          temporally, or semantically suspicious, answer "Yes".
+        - If you are unsure, answer "Yes".
+        - Only answer "No" if the chunk appears clearly unproblematic.
+
+        Chunk:
+        "{chunk}"
+
+        Answer with one word only:
+        Yes or No
+
+        """
+
+        return self._generate_prompt(prompt.format(chunk=chunk))
+
+    def conflict_detection_layer2(self,claim):
+        prompt = """
+        You are a factual verifier.
+
+        Given a single factual statement, determine whether it conflicts with well-established world knowledge
+        based on your own internal knowledge (not external sources).
+
+        Statement:
+        "{claim}"
+
+        Output:{{
+            "has_conflict":"...",
+            "Reason":"...",
+            "internal_knowledge":"...",
+        }}
+        Rules:
+        About has_conflict in Output
+        - Use "yes" if the statement contradicts well-established world knowledge.
+        - Use "no" if the statement does not contradict well-established world knowledge.
+        - Use "uncertain" only if you are not confident about the conflict.
+        """
+
+        return self._generate_prompt(prompt.format(claim=claim))
